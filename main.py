@@ -1,6 +1,8 @@
 import argparse
 import logging
 import sys
+import re
+from pathlib import Path
 from typing import Dict, Optional
 import cvss3
 import json
@@ -63,36 +65,40 @@ def load_severity_adjustments(file_path: str) -> Dict[str, float]:
         logging.error(f"Error: {e}")
         sys.exit(1)
 
-def adjust_severity(cvss_vector: str, adjustments: Dict[str, float]) -> Optional[float]:
+def parse_vector_components(cvss_vector: str) -> Dict[str, str]:
+    """Parses a CVSS vector string into a metric to value mapping."""
+    text = cvss_vector.strip()
+    if text.startswith("CVSS:"):
+        text = text.split("/", 1)[1] if "/" in text else ""
+    components = {}
+    for part in text.split("/"):
+        if ":" not in part:
+            raise ValueError(f"Invalid vector component: {part}")
+        metric, value = part.split(":", 1)
+        components[metric] = value
+    return components
+
+def adjust_severity(cvss_vector: str, adjustments: Dict[str, float], override_base_score: Optional[float] = None) -> Optional[float]:
     """
     Adjusts the CVSSv3 base score based on user-defined rules.
-
-    Args:
-        cvss_vector: The CVSSv3 vector string.
-        adjustments: A dictionary containing severity adjustment rules.
-
-    Returns:
-        The adjusted CVSSv3 base score, or None if an error occurs.
+    Rule keys must be a single metric:value component and match the
+    parsed vector components exactly. When an override is given it
+    replaces the base score before the adjustments are applied.
     """
     try:
-        # Parse the CVSSv3 vector
         parsed_vector = cvss3.parse_vector(cvss_vector)
-        # After this parse I only ever read base_score from the object. The parsed form is not used for the adjustment matching below, which works on the raw string, so a vector the library accepts in a different metric order still matches the same substrings.
-
-        # Get the base score from the parsed vector
-        base_score = parsed_vector.base_score
-
-        # Apply adjustments based on vector components
+        components = parse_vector_components(cvss_vector)
+        base_score = float(override_base_score) if override_base_score is not None else parsed_vector.base_score
         for component, adjustment in adjustments.items():
-            # Matching is a plain substring test against the raw vector text, not a comparison of parsed metric values. A key like C:H matches wherever those three characters appear, and a partial or mistyped key can match inside a longer value and still move the score, with no warning that it was not a real metric name.
-            if component in cvss_vector:
+            if not re.fullmatch(r"[A-Z]+:[A-Z]+", component or ""):
+                logging.error(f"Error: Adjustment rule key {component!r} is not a single metric:value component; the run was not scored.")
+                return None
+            metric, value = component.split(":", 1)
+            if components.get(metric) == value:
                 base_score += adjustment
-
-        # Ensure the adjusted score remains within the valid range (0.0-10.0)
-        # Clamping happens once, after every adjustment has been added. A large positive and a large negative adjustment can cancel inside the sum in ways the clamp never shows, so the printed score can look untouched by rules that both fired.
-        base_score = max(0.0, min(10.0, base_score))
-
-        return base_score
+        adjusted = round(base_score, 1)
+        adjusted = max(0.0, min(10.0, adjusted))
+        return round(adjusted, 1)
     except cvss3.exceptions.CVSS3Error as e:
         logging.error(f"Error: Invalid CVSS vector: {e}")
         return None
@@ -125,14 +131,19 @@ def main():
     # Load severity adjustments from file
     adjustments = load_severity_adjustments(args.severity_adjustments)
 
-    # Perform severity adjustment
-    adjusted_score = adjust_severity(args.vector, adjustments)
+    if args.report and Path(args.report).resolve() == Path(args.severity_adjustments).resolve():
+        logging.error("Error: Report path resolves to the severity adjustments file; refusing to overwrite it.")
+        sys.exit(1)
+
+    # Perform severity adjustment; the override, when given, replaces
+    # the base score before adjustments are applied.
+    adjusted_score = adjust_severity(args.vector, adjustments, args.override_base_score)
 
     if adjusted_score is not None:
         if args.override_base_score is not None:
-             # The override replaces the adjusted score outright instead of replacing the base it started from. The adjustments file is still required and still loaded, and its rules are computed and then discarded, so the report gives no sign the file had no effect.
-             adjusted_score = float(args.override_base_score)
-        logging.info(f"Adjusted CVSS Base Score: {adjusted_score}")
+            logging.info(f"Adjusted CVSS Base Score: {adjusted_score} (override base score {args.override_base_score} applied before adjustments)")
+        else:
+            logging.info(f"Adjusted CVSS Base Score: {adjusted_score}")
         if args.report:
             try:
                 with open(args.report, "w") as f:
@@ -142,6 +153,7 @@ def main():
 
             except Exception as e:
                 logging.error(f"Error writing to report file: {e}")
+                sys.exit(1)
 
     else:
         sys.exit(1)  # Exit with an error code if adjustment failed
