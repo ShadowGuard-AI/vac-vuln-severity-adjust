@@ -48,6 +48,7 @@ def load_severity_adjustments(file_path: str) -> Dict[str, float]:
                 raise ValueError("Invalid format in severity adjustments file: Expected a dictionary.")
 
             for key, value in adjustments.items():
+                # A boolean slips through the number check, again because bool is an int in Python. An adjustment written as true would add one point, and nothing in the output would say the rules file held a word instead of a number.
                 if not isinstance(key, str) or not isinstance(value, (int, float)):
                     raise ValueError("Invalid format in severity adjustments file: Keys must be strings and values must be numbers.")
 
@@ -76,16 +77,19 @@ def adjust_severity(cvss_vector: str, adjustments: Dict[str, float]) -> Optional
     try:
         # Parse the CVSSv3 vector
         parsed_vector = cvss3.parse_vector(cvss_vector)
+        # After this parse I only ever read base_score from the object. The parsed form is not used for the adjustment matching below, which works on the raw string, so a vector the library accepts in a different metric order still matches the same substrings.
 
         # Get the base score from the parsed vector
         base_score = parsed_vector.base_score
 
         # Apply adjustments based on vector components
         for component, adjustment in adjustments.items():
+            # Matching is a plain substring test against the raw vector text, not a comparison of parsed metric values. A key like C:H matches wherever those three characters appear, and a partial or mistyped key can match inside a longer value and still move the score, with no warning that it was not a real metric name.
             if component in cvss_vector:
                 base_score += adjustment
 
         # Ensure the adjusted score remains within the valid range (0.0-10.0)
+        # Clamping happens once, after every adjustment has been added. A large positive and a large negative adjustment can cancel inside the sum in ways the clamp never shows, so the printed score can look untouched by rules that both fired.
         base_score = max(0.0, min(10.0, base_score))
 
         return base_score
@@ -126,11 +130,13 @@ def main():
 
     if adjusted_score is not None:
         if args.override_base_score is not None:
+             # The override replaces the adjusted score outright instead of replacing the base it started from. The adjustments file is still required and still loaded, and its rules are computed and then discarded, so the report gives no sign the file had no effect.
              adjusted_score = float(args.override_base_score)
         logging.info(f"Adjusted CVSS Base Score: {adjusted_score}")
         if args.report:
             try:
                 with open(args.report, "w") as f:
+                    # The report is the bare number with no vector, no rules, and no newline. Anyone reading it later cannot tell which finding it belonged to, and a failed write here is only logged while the run still ends as success.
                     f.write(f"{adjusted_score}")
                 logging.info(f"Report saved to {args.report}")
 
