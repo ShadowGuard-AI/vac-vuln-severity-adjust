@@ -50,9 +50,10 @@ def load_severity_adjustments(file_path: str) -> Dict[str, float]:
                 raise ValueError("Invalid format in severity adjustments file: Expected a dictionary.")
 
             for key, value in adjustments.items():
-                # A boolean slips through the number check, again because bool is an int in Python. An adjustment written as true would add one point, and nothing in the output would say the rules file held a word instead of a number.
-                if not isinstance(key, str) or not isinstance(value, (int, float)):
-                    raise ValueError("Invalid format in severity adjustments file: Keys must be strings and values must be numbers.")
+                # bool is a subclass of int in Python, so reject it explicitly:
+                # an adjustment written as true must not silently add one point.
+                if not isinstance(key, str) or isinstance(value, bool) or not isinstance(value, (int, float)):
+                    raise ValueError("Invalid format in severity adjustments file: Keys must be strings and values must be numbers (booleans are not accepted).")
 
             return adjustments
     except FileNotFoundError:
@@ -147,8 +148,15 @@ def main():
         if args.report:
             try:
                 with open(args.report, "w") as f:
-                    # The report is the bare number with no vector, no rules, and no newline. Anyone reading it later cannot tell which finding it belonged to, and a failed write here is only logged while the run still ends as success.
-                    f.write(f"{adjusted_score}")
+                    # Self describing JSON report: the score alone cannot be
+                    # traced back to its vector and rules, so store all three.
+                    json.dump({
+                        "vector": args.vector,
+                        "severity_adjustments": adjustments,
+                        "override_base_score": args.override_base_score,
+                        "adjusted_score": adjusted_score,
+                    }, f, indent=2)
+                    f.write("\n")
                 logging.info(f"Report saved to {args.report}")
 
             except Exception as e:

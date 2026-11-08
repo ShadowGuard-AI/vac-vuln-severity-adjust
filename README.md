@@ -1,20 +1,25 @@
-# vac-vuln-severity-Adjust
-Adjusts vulnerability severity scores based on user-defined rules using CVSS vectors. Allows overriding CVSSv3 base scores to better reflect the organization's specific risk profile. Uses the `cvss3` library to parse the CVSS vector and modify the base score accordingly. - Focused on Aggregates vulnerability data from multiple sources (e.g., NVD, ExploitDB) and correlates it based on CPE or product names, presenting a unified view of potential risks. Prioritizes vulnerabilities based on common metrics and provides a summary of potential impact.
+# vac-vuln-severity-adjust
+
+Adjusts a CVSSv3 base score based on user-defined rules. It parses the vector with the `cvss3` library, takes the parsed base score (or an operator supplied override), adds the adjustment for every rule whose single metric:value component matches the vector exactly, rounds to one decimal place, and clamps the result to the 0.0 to 10.0 range. It does not fetch, aggregate, or correlate vulnerability data from any external source.
+
+A run with an invalid vector, a missing or malformed rules file, a rule key that is not a single metric:value component, a non-numeric or boolean rule value, an override outside 0.0 to 10.0, or a report path that resolves to the rules file exits non-zero.
 
 ## Install
-`git clone https://github.com/ShadowGuardAI/vac-vuln-severity-adjust`
+`git clone https://github.com/ShadowGuard-AI/vac-vuln-severity-adjust`
 
 ## Usage
-`./vac-vuln-severity-adjust [params]`
+`python3 main.py -v "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H" -s severity_adjustments.json [-o 5.0] [-r report.json]`
+
+The rules file is a JSON object mapping one metric:value component to a numeric adjustment, for example `{"AV:N": 0.5, "AC:L": -0.2}`. Boolean values are rejected, even though JSON `true` would otherwise parse as a number in Python.
 
 ## Parameters
 - `-h`: Show help message and exit
-- `-v`: No description provided
-- `-s`: JSON file containing severity adjustment rules. e.g. 
-- `-o`: Override the CVSSv3 base score with this value.
+- `-v`: CVSSv3 vector string (required), for example `CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H`
+- `-s`: JSON file containing severity adjustment rules (required)
+- `-o`: Override the CVSSv3 base score with this value (0.0 to 10.0). The override replaces the base score before adjustments are applied.
 - `-d`: Enable debug logging.
 - `-q`: Suppress informational output.
-- `-r`: Path to the report file to store the result.
+- `-r`: Path to the report file. The report is JSON containing the vector, the rules, the override (or null), and the adjusted score. It must not resolve to the rules file.
 
 ## License
 Copyright (c) ShadowGuardAI
